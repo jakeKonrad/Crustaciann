@@ -1,102 +1,138 @@
-// Directed Acyclic Multigraphs from
-// Jeremy Gibbons, "An Initial Algebra Approach to
-// Directed Graphs" but without the empty graph
-enum DAMG<A> {
-    Edge(u64),
-    Vert(u64, u64, A),
-    Seq(u64, u64, Box<Self>, Box<Self>),
-    Par(u64, u64, Box<Self>, Box<Self>),
-    Swap(u64, u64),
+extern crate tensorflow;
+extern crate tch;
+
+use std::ops::Add;
+use std::ops::Mul;
+use std::rc::Rc;
+
+// TODO: Right now these are just planar graphs. Implement constuctors
+// for non-planar graphs.
+#[derive(Debug)]
+pub enum Graph<T, A> {
+    Vert(Rc<Vec<T>>, Rc<Vec<T>>, Rc<A>),
+    Edge(),
+    Beside(usize, usize, Rc<Self>, Rc<Self>),
+    Before(usize, usize, Rc<Self>, Rc<Self>),
+    Empty(),
 }
 
-// Smart constructors for DAMGs.
-impl<A> DAMG<A> {
-    fn entries_n_exits(&self) -> (u64, u64) {
-        match *self {
-            Self::Edge(n) => (1, n),
-            Self::Vert(m, n, _) => (m, n),
-            Self::Seq(m, n, _, _) => (m, n),
-            Self::Par(m, n, _, _) => (m, n),
-            Self::Swap(m, n) => (m + n, n + m),
+impl<T, A> Clone for Graph<T, A> {
+    fn clone(&self) -> Self {
+        match self {
+            Graph::Vert(inputs, outputs, label) => {
+                Graph::Vert(Rc::clone(inputs), Rc::clone(outputs), Rc::clone(label))
+            }
+            Graph::Edge() => Graph::Edge(),
+            Graph::Beside(m, n, x, y) => Graph::Beside(*m, *n, Rc::clone(x), Rc::clone(y)),
+            Graph::Before(m, n, x, y) => Graph::Before(*m, *n, Rc::clone(x), Rc::clone(y)),
+            Graph::Empty() => Graph::Empty(),
         }
     }
+}
 
-    fn edge(n : u64) -> Self {
-        Self::Edge(n)
+impl<T, A> Graph<T, A> {
+
+    pub fn entries_and_exits(&self) -> (usize, usize) {
+        match self {
+            Graph::Vert(inputs, outputs, _) => (inputs.len(), outputs.len()),
+            Graph::Edge() => (1, 1),
+            Graph::Beside(m, n, _, _) => (*m, *n),
+            Graph::Before(m, n, _, _) => (*m, *n),
+            Graph::Empty() => (0, 0),
+        }
     }
-
-    fn vert(m: u64, n: u64, a: A) -> Self {
-        Self::Vert(m, n, a)
-    }
-
-    fn seq(x: Self, y: Self) -> Option<Self> {
-        let (m, n) = x.entries_n_exits();
-        let (p, q) = y.entries_n_exits();
-
-        (n == p).then(|| Self::Seq(m, q, Box::new(x), Box::new(y)))
-    }
-
-    fn par(x: Self, y: Self) -> Self {
-        let (m, n) = x.entries_n_exits();
-        let (p, q) = y.entries_n_exits();
-
-        Self::Par(m + p, n + q, Box::new(x), Box::new(y))
-    }
-
-    fn swap(m: u64, n: u64) -> Self {
-        Self::Swap(m, n)
+    
+    pub fn vert(inputs : Vec<T>, outputs: Vec<T>, label: A) -> Graph<T, A> {
+        Graph::Vert(Rc::new(inputs), Rc::new(outputs), Rc::new(label))
     }
 }
 
-pub struct NN<A>(DAMG<fn(A) -> A>);
+impl<T, A> Add for Graph<T, A> {
+    type Output = Graph<T, A>;
 
-// simple feedforward neural network constructors
-impl<A> NN<A> {
-    pub fn edge(n : u64) -> Self {
-        Self(DAMG::edge(n))
-    }
-
-    pub fn neuron(m: u64, n: u64, activation: fn(A) -> A) -> Self {
-       Self(DAMG::vert(m, n, activation))
-    }
-
-    pub fn seq(Self(x) : Self, Self(y) : Self) -> Option<Self> {
-        DAMG::seq(x, y).map(|z| Self(z))
-    }
-
-    pub fn par(Self(x) : Self, Self(y) : Self) -> Self {
-        Self(DAMG::par(x, y))
-    }
-
-    pub fn swap(m : u64, n : u64) -> Self {
-        Self(DAMG::swap(m, n))
+    fn add(self, other: Graph<T, A>) -> Graph<T, A> {
+        let (m, _) = self.entries_and_exits();
+        let (_, n) = other.entries_and_exits();
+        Graph::Before(m, n, Rc::new(self), Rc::new(other))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl<'a, T, A> Add<&'a Graph<T, A>> for &'a Graph<T, A> {
+    type Output = Graph<T, A>;
 
-    // A simple xor network
-    //
-    //            +-------+
-    // Input A ---+       +--- Neuron A ---+    
-    //            +--- ---+                +
-    //                X                    +--- Output A
-    //            +--- ---+                +
-    // Input B ---+       +--- Neuron B ---+
-    //            +-------+
-    //             
-    #[test]
-    fn xor() {
-        let inputs : NN<f32> = NN::par(NN::edge(2), NN::edge(2));
-        let swap : NN<f32> = NN::par(NN::par(NN::edge(1), NN::swap(1, 1)), NN::edge(1));
-        let hidden = NN::par(NN::<f32>::neuron(2, 1, |x| x.tanh()), NN::<f32>::neuron(2, 1, |x| x.tanh()));
-        let output = NN::<f32>::neuron(2, 1, |x| x.tanh());
-        let nn : Option<NN<f32>> = NN::seq(inputs, swap)
-            .and_then(|nn| NN::seq(nn, hidden))
-            .and_then(|nn| NN::seq(nn, output));
-        
-        assert!(nn.is_some());
+    fn add(self, other: &'a Graph<T, A>) -> Graph<T, A> {
+        self.clone() + other.clone()
+    }
+}
+
+impl<'a, T, A> Add<&'a Graph<T, A>> for Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn add(self, other: &'a Graph<T, A>) -> Self {
+        self + other.clone()
+    }
+}
+
+impl<'a, T, A> Add<Graph<T, A>> for &'a Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn add(self, other: Graph<T, A>) -> Graph<T, A> {
+        self.clone() + other
+    }
+}
+
+impl<T, A> Mul for Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn mul(self, other: Graph<T, A>) -> Graph<T, A> {
+        let (m, n) = self.entries_and_exits();
+        let (p, q) = other.entries_and_exits();
+        Graph::Beside(m + p, n + q, Rc::new(self), Rc::new(other))
+    }
+}
+
+impl<'a, T, A> Mul<&'a Graph<T, A>> for &'a Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn mul(self, other: Self) -> Graph<T, A> {
+        self.clone() * other.clone()
+    }
+}
+
+impl<'a, T, A> Mul<&'a Graph<T, A>> for Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn mul(self, other: &'a Graph<T, A>) -> Graph<T, A> {
+        self * other.clone()
+    }
+}
+
+impl<'a, T, A> Mul<Graph<T, A>> for &'a Graph<T, A> {
+    type Output = Graph<T, A>;
+
+    fn mul(self, other: Graph<T, A>) -> Graph<T, A> {
+        self.clone() * other
+    }
+}
+
+impl<'a, T, A> Mul<&'a Graph<T, A>> for usize {
+    type Output = Graph<T, A>;
+
+    fn mul(self, graph: &Graph<T, A>) -> Graph<T, A> {
+        match self {
+            0 => Graph::Empty(),
+            n => graph * ((n - 1) * graph),
+        }
+    }
+}
+
+impl<T, A> Mul<Graph<T, A>> for usize {
+    type Output = Graph<T, A>;
+
+    fn mul(self, graph: Graph<T, A>) -> Graph<T, A> {
+        match self {
+            0 => Graph::Empty(),
+            n => &graph * ((n - 1) * &graph),
+        }
     }
 }
